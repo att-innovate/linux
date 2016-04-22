@@ -61,6 +61,7 @@ struct wireless_dev;
 /* 802.15.4 specific */
 struct wpan_dev;
 struct mpls_dev;
+struct bpf_prog;
 
 void netdev_set_default_ethtool_ops(struct net_device *dev,
 				    const struct ethtool_ops *ops);
@@ -1102,6 +1103,13 @@ struct tc_to_netdev {
  *	appropriate rx headroom value allows avoiding skb head copy on
  *	forward. Setting a negative value resets the rx headroom to the
  *	default value.
+ * int  (*ndo_bpf_set)(struct net_device *dev, struct bpf_prog *prog);
+ *     This function is used to set or clear a bpf program used in the
+ *     earliest stages of packet rx. The fd must be a program loaded as
+ *     BPF_PROG_TYPE_PHYS_DEV. Negative values of fd indicate the program
+ *     should be removed.
+ * bool (*ndo_bpf_get)(struct net_device *dev);
+ *    This function is used to check if a bpf program is set on the device.
  *
  */
 struct net_device_ops {
@@ -1290,8 +1298,11 @@ struct net_device_ops {
 							 bool proto_down);
 	int			(*ndo_fill_metadata_dst)(struct net_device *dev,
 						       struct sk_buff *skb);
-	void			(*ndo_set_rx_headroom)(struct net_device *dev,
+	void		        (*ndo_set_rx_headroom)(struct net_device *dev,
 						       int needed_headroom);
+	int                     (*ndo_bpf_set)(struct net_device *dev,
+                                                struct bpf_prog *prog);
+    	bool                    (*ndo_bpf_get)(struct net_device *dev);
 };
 
 /**
@@ -1875,6 +1886,7 @@ struct net_device {
 	struct phy_device	*phydev;
 	struct lock_class_key	*qdisc_tx_busylock;
 	bool			proto_down;
+        bool                    bpf_valid;
 };
 #define to_net_dev(d) container_of(d, struct net_device, dev)
 
@@ -3268,6 +3280,7 @@ int dev_get_phys_port_id(struct net_device *dev,
 int dev_get_phys_port_name(struct net_device *dev,
 			   char *name, size_t len);
 int dev_change_proto_down(struct net_device *dev, bool proto_down);
+int dev_change_bpf_fd(struct net_device *dev, int fd);
 struct sk_buff *validate_xmit_skb_list(struct sk_buff *skb, struct net_device *dev);
 struct sk_buff *dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
 				    struct netdev_queue *txq, int *ret);

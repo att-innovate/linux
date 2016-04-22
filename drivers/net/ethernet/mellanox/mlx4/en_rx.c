@@ -748,6 +748,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 	struct mlx4_en_rx_ring *ring = priv->rx_ring[cq->ring];
 	struct mlx4_en_rx_alloc *frags;
 	struct mlx4_en_rx_desc *rx_desc;
+	struct bpf_prog *prog;
 	struct sk_buff *skb;
 	int index;
 	int nr;
@@ -763,6 +764,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 
 	if (budget <= 0)
 		return polled;
+        prog = READ_ONCE(priv->prog);
 
 	/* We assume a 1:1 mapping between CQEs and Rx descriptors, so Rx
 	 * descriptor offset can be deduced from the CQE index instead of
@@ -839,7 +841,23 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		ring->packets++;
 		l2_tunnel = (dev->hw_enc_features & NETIF_F_RXCSUM) &&
 			(cqe->vlan_my_qpn & cpu_to_be32(MLX4_CQE_L2_TUNNEL));
+		/* A bpf program gets first chance to drop the packet. It may
+		 * read bytes but not past the end of the frag.
+		 */
+		if (prog) {
+			struct ethhdr *ethh;
+			dma_addr_t dma;
 
+			dma = be64_to_cpu(rx_desc->data[0].addr);
+			dma_sync_single_for_cpu(priv->ddev, dma, sizeof(*ethh),
+						DMA_FROM_DEVICE);
+			ethh = page_address(frags[0].page) +
+							frags[0].page_offset;
+			if (mlx4_call_bpf(prog, ethh, frags[0].page_size) ==
+							BPF_PHYS_DEV_DROP)
+				goto next;
+		}
+	
 		if (likely(dev->features & NETIF_F_RXCSUM)) {
 			if (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_TCP |
 						      MLX4_CQE_STATUS_UDP)) {
@@ -1070,7 +1088,7 @@ void mlx4_en_calc_rx_buf(struct net_device *dev)
 	/* VLAN_HLEN is added twice,to support skb vlan tagged with multiple
 	 * headers. (For example: ETH_P_8021Q and ETH_P_8021AD).
 	 */
-	int eff_mtu = dev->mtu + ETH_HLEN + (2 * VLAN_HLEN);
+	int eff_mtu = MLX4_EN_EFF_MTU(dev->mtu);
 	int buf_size = 0;
 	int i = 0;
 

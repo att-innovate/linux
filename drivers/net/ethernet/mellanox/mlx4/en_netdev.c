@@ -30,7 +30,7 @@
  * SOFTWARE.
  *
  */
-
+#include <linux/bpf.h>
 #include <linux/etherdevice.h>
 #include <linux/tcp.h>
 #include <linux/if_vlan.h>
@@ -1966,6 +1966,9 @@ void mlx4_en_free_resources(struct mlx4_en_priv *priv)
 			mlx4_en_destroy_cq(priv, &priv->rx_cq[i]);
 	}
 
+        if (priv->prog)
+                bpf_prog_put(priv->prog);
+
 }
 
 int mlx4_en_alloc_resources(struct mlx4_en_priv *priv)
@@ -2078,6 +2081,11 @@ static int mlx4_en_change_mtu(struct net_device *dev, int new_mtu)
 		en_err(priv, "Bad MTU size:%d.\n", new_mtu);
 		return -EPERM;
 	}
+	if (priv->prog && MLX4_EN_EFF_MTU(new_mtu) > FRAG_SZ0) {
+		en_err(priv, "MTU size:%d requires frags but bpf prog running",
+		       new_mtu);
+		return -EOPNOTSUPP;
+	}	
 	dev->mtu = new_mtu;
 
 	if (netif_running(dev)) {
@@ -2456,6 +2464,59 @@ static int mlx4_en_set_tx_maxrate(struct net_device *dev, int queue_index, u32 m
 	return err;
 }
 
+static DEFINE_PER_CPU(struct sk_buff, percpu_bpf_phys_dev_md);
+
+static void build_bpf_phys_dev_md(struct sk_buff *skb, void *data,
+				  unsigned int length)
+{
+	/* data_len is intentionally not set here so that skb_is_nonlinear()
+	 * returns false
+	 */
+
+	skb->len = length;
+	skb->head = data;
+	skb->data = data;
+}
+
+int mlx4_call_bpf(struct bpf_prog *prog, void *data, unsigned int length)
+{
+	struct sk_buff *skb = this_cpu_ptr(&percpu_bpf_phys_dev_md);
+	int ret;
+
+	build_bpf_phys_dev_md(skb, data, length);
+
+	rcu_read_lock();
+	ret = BPF_PROG_RUN(prog, (void *)skb);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+static int mlx4_bpf_set(struct net_device *dev, struct bpf_prog *prog)
+{
+	struct mlx4_en_priv *priv = netdev_priv(dev);
+	struct bpf_prog *old_prog;
+
+	if (priv->num_frags > 1)
+		return -EOPNOTSUPP;
+
+	old_prog = xchg(&priv->prog, prog);
+	if (old_prog) {
+		synchronize_net();
+		bpf_prog_put(old_prog);
+	}
+
+	return 0;
+}
+
+static bool mlx4_bpf_get(struct net_device *dev)
+{
+	struct mlx4_en_priv *priv = netdev_priv(dev);
+
+	return !!priv->prog;
+}
+
+
 static const struct net_device_ops mlx4_netdev_ops = {
 	.ndo_open		= mlx4_en_open,
 	.ndo_stop		= mlx4_en_close,
@@ -2486,6 +2547,8 @@ static const struct net_device_ops mlx4_netdev_ops = {
 	.ndo_features_check	= mlx4_en_features_check,
 #endif
 	.ndo_set_tx_maxrate	= mlx4_en_set_tx_maxrate,
+        .ndo_bpf_set            = mlx4_bpf_set,
+	.ndo_bpf_get		= mlx4_bpf_get,
 };
 
 static const struct net_device_ops mlx4_netdev_ops_master = {
@@ -2524,6 +2587,8 @@ static const struct net_device_ops mlx4_netdev_ops_master = {
 	.ndo_features_check	= mlx4_en_features_check,
 #endif
 	.ndo_set_tx_maxrate	= mlx4_en_set_tx_maxrate,
+	.ndo_bpf_set		= mlx4_bpf_set,
+	.ndo_bpf_get		= mlx4_bpf_get,
 };
 
 struct mlx4_en_bond {

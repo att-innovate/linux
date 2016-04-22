@@ -92,6 +92,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_KPROBE,
 	BPF_PROG_TYPE_SCHED_CLS,
 	BPF_PROG_TYPE_SCHED_ACT,
+    	BPF_PROG_TYPE_PHYS_DEV,
 };
 
 #define BPF_PSEUDO_MAP_FD	1
@@ -365,6 +366,19 @@ struct __sk_buff {
 	__u32 cb[5];
 	__u32 hash;
 	__u32 tc_classid;
+};
+
+/* user return codes for PHYS_DEV prog type */
+enum bpf_phys_dev_action {
+	BPF_PHYS_DEV_DROP,
+	BPF_PHYS_DEV_OK,
+};
+
+/* user accessible metadata for PHYS_DEV packet hook
+ * new fields must be added to the end of this structure
+ */
+struct bpf_phys_dev_md {
+	__u32 len;
 };
 
 struct bpf_tunnel_key {

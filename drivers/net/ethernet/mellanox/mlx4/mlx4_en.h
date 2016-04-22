@@ -164,6 +164,10 @@ enum {
 #define MLX4_LOOPBACK_TEST_PAYLOAD (HEADER_COPY_SIZE - ETH_HLEN)
 
 #define MLX4_EN_MIN_MTU		46
+/* VLAN_HLEN is added twice,to support skb vlan tagged with multiple
+ * headers. (For example: ETH_P_8021Q and ETH_P_8021AD).
+ */
+#define MLX4_EN_EFF_MTU(mtu)	((mtu) + ETH_HLEN + (2 * VLAN_HLEN))
 #define ETH_BCAST		0xffffffffffffULL
 
 #define MLX4_EN_LOOPBACK_RETRIES	5
@@ -568,6 +572,7 @@ struct mlx4_en_priv {
 	struct hlist_head mac_hash[MLX4_EN_MAC_HASH_SIZE];
 	struct hwtstamp_config hwtstamp_config;
 	u32 counter_index;
+        struct bpf_prog *prog;
 
 #ifdef CONFIG_MLX4_EN_DCB
 	struct ieee_ets ets;
@@ -682,6 +687,7 @@ int mlx4_en_create_drop_qp(struct mlx4_en_priv *priv);
 void mlx4_en_destroy_drop_qp(struct mlx4_en_priv *priv);
 int mlx4_en_free_tx_buf(struct net_device *dev, struct mlx4_en_tx_ring *ring);
 void mlx4_en_rx_irq(struct mlx4_cq *mcq);
+int mlx4_call_bpf(struct bpf_prog *prog, void *data, unsigned int length);
 
 int mlx4_SET_MCAST_FLTR(struct mlx4_dev *dev, u8 port, u64 mac, u64 clear, u8 mode);
 int mlx4_SET_VLAN_FLTR(struct mlx4_dev *dev, struct mlx4_en_priv *priv);

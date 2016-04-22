@@ -25,7 +25,7 @@
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 *******************************************************************************/
-
+#include <linux/bpf.h>
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -2057,12 +2057,12 @@ static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 	unsigned int mss = 0;
 #endif /* IXGBE_FCOE */
 	u16 cleaned_count = ixgbe_desc_unused(rx_ring);
-
 	while (likely(total_rx_packets < budget)) {
-		union ixgbe_adv_rx_desc *rx_desc;
+        	union ixgbe_adv_rx_desc *rx_desc;
+	        struct bpf_prog *prog;
 		struct sk_buff *skb;
-
-		/* return some buffers to hardware, one at a time is too slow */
+                prog = READ_ONCE(q_vector->adapter->prog);
+                /* return some buffers to hardware, one at a time is too slow */
 		if (cleaned_count >= IXGBE_RX_BUFFER_WRITE) {
 			ixgbe_alloc_rx_buffers(rx_ring, cleaned_count);
 			cleaned_count = 0;
@@ -2078,11 +2078,10 @@ static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		 * descriptor has been written back
 		 */
 		dma_rmb();
-
-		/* retrieve a buffer from the ring */
+                /* retrieve a buffer from the ring */
 		skb = ixgbe_fetch_rx_buffer(rx_ring, rx_desc);
-
-		/* exit if we failed to retrieve a buffer */
+                
+                /* exit if we failed to retrieve a buffer */
 		if (!skb)
 			break;
 
@@ -2098,40 +2097,53 @@ static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 
 		/* probably a little skewed due to removing CRC */
 		total_rx_bytes += skb->len;
+        	
+                /* A bpf program gets first chance to drop the packet. It may
+		* read bytes but not past the end of the frag. A non-zero
+		* return indicates packet should be dropped.
+		*/
+		if (prog) {
+                        struct ethhdr *ethh;
+		        ethh = (struct ethhdr *)(skb->data);
+			if ((ixgbe_call_bpf(prog, ethh, skb->len)) ==
+                                                        BPF_PHYS_DEV_DROP)
+                                continue;
+                                //printk(KERN_DEBUG "dropping packet\n");
+                } else {
 
-		/* populate checksum, timestamp, VLAN, and protocol */
-		ixgbe_process_skb_fields(rx_ring, rx_desc, skb);
-
+		        /* populate checksum, timestamp, VLAN, and protocol */
+		        ixgbe_process_skb_fields(rx_ring, rx_desc, skb);
 #ifdef IXGBE_FCOE
-		/* if ddp, not passing to ULD unless for FCP_RSP or error */
-		if (ixgbe_rx_is_fcoe(rx_ring, rx_desc)) {
-			ddp_bytes = ixgbe_fcoe_ddp(adapter, rx_desc, skb);
-			/* include DDPed FCoE data */
-			if (ddp_bytes > 0) {
-				if (!mss) {
-					mss = rx_ring->netdev->mtu -
-						sizeof(struct fcoe_hdr) -
-						sizeof(struct fc_frame_header) -
-						sizeof(struct fcoe_crc_eof);
-					if (mss > 512)
-						mss &= ~511;
-				}
-				total_rx_bytes += ddp_bytes;
-				total_rx_packets += DIV_ROUND_UP(ddp_bytes,
-								 mss);
+		        /* if ddp, not passing to ULD unless for FCP_RSP or error */
+			if (ixgbe_rx_is_fcoe(rx_ring, rx_desc)) {
+				ddp_bytes = ixgbe_fcoe_ddp(adapter, rx_desc, skb);
+				    /* include DDPed FCoE data */
+				    if (ddp_bytes > 0) {
+					    if (!mss) {
+						    mss = rx_ring->netdev->mtu -
+							    sizeof(struct fcoe_hdr) -
+							    sizeof(struct fc_frame_header) -
+							    sizeof(struct fcoe_crc_eof);
+						    if (mss > 512)
+							    mss &= ~511;
+					    }
+					    total_rx_bytes += ddp_bytes;
+					    total_rx_packets += DIV_ROUND_UP(ddp_bytes,
+									 mss);
+				    }
+				    if (!ddp_bytes) {
+					    dev_kfree_skb_any(skb);
+					    continue;
+				    }
 			}
-			if (!ddp_bytes) {
-				dev_kfree_skb_any(skb);
-				continue;
-			}
-		}
 
 #endif /* IXGBE_FCOE */
-		ixgbe_rx_skb(q_vector, skb);
-
-		/* update budget accounting */
+			ixgbe_rx_skb(q_vector, skb);
+		        
+                        /* update budget accounting */
 		total_rx_packets++;
-	}
+                }
+    	}
 
 	u64_stats_update_begin(&rx_ring->syncp);
 	rx_ring->stats.packets += total_rx_packets;
@@ -5938,6 +5950,9 @@ static void ixgbe_free_all_rx_resources(struct ixgbe_adapter *adapter)
 	ixgbe_free_fcoe_ddp_resources(adapter);
 
 #endif
+        if (adapter->prog)
+                bpf_prog_put(adapter->prog);
+
 	for (i = 0; i < adapter->num_rx_queues; i++)
 		if (adapter->rx_ring[i]->desc)
 			ixgbe_free_rx_resources(adapter->rx_ring[i]);
@@ -8848,6 +8863,55 @@ ixgbe_features_check(struct sk_buff *skb, struct net_device *dev,
 	return features;
 }
 
+static DEFINE_PER_CPU(struct sk_buff, percpu_bpf_phys_dev_md);
+
+static void build_bpf_phys_dev_md(struct sk_buff *skb, void *data,
+                                  unsigned int length)
+{
+        /* data_len is intentionally not set here so that skb_is_nonlinear()
+         * returns false
+         */
+
+        skb->len = length;
+        skb->head = data;
+        skb->data = data;
+}
+
+int ixgbe_call_bpf(struct bpf_prog *prog, void *data, unsigned int length)
+{
+        struct sk_buff *skb = this_cpu_ptr(&percpu_bpf_phys_dev_md);
+	int ret;
+
+        build_bpf_phys_dev_md(skb, data, length);
+
+	rcu_read_lock();
+	ret = BPF_PROG_RUN(prog, (void *)skb);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+static int ixgbe_bpf_set(struct net_device *dev, struct bpf_prog *prog)
+{
+	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	struct bpf_prog *old_prog;
+
+	old_prog = xchg(&adapter->prog, prog);
+	if (old_prog) {
+		synchronize_net();
+		bpf_prog_put(old_prog);
+	}
+
+	return 0;
+}
+
+static bool ixgbe_bpf_get(struct net_device *dev)
+{
+	struct ixgbe_adapter *adapter = netdev_priv(dev);
+
+	return !!adapter->prog;
+}
+
 static const struct net_device_ops ixgbe_netdev_ops = {
 	.ndo_open		= ixgbe_open,
 	.ndo_stop		= ixgbe_close,
@@ -8897,6 +8961,9 @@ static const struct net_device_ops ixgbe_netdev_ops = {
 	.ndo_del_vxlan_port	= ixgbe_del_vxlan_port,
 #endif /* CONFIG_IXGBE_VXLAN */
 	.ndo_features_check	= ixgbe_features_check,
+	/* xdp bpf hook */
+	.ndo_bpf_set = ixgbe_bpf_set,
+	.ndo_bpf_get = ixgbe_bpf_get,
 };
 
 /**

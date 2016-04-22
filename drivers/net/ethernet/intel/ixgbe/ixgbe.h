@@ -806,6 +806,8 @@ struct ixgbe_adapter {
 
 #define IXGBE_RSS_KEY_SIZE     40  /* size of RSS Hash Key in bytes */
 	u32 rss_key[IXGBE_RSS_KEY_SIZE / sizeof(u32)];
+        /* XDP prog hook */
+        struct bpf_prog *prog;
 };
 
 static inline u8 ixgbe_max_rss_indices(struct ixgbe_adapter *adapter)
@@ -1024,4 +1026,6 @@ netdev_tx_t ixgbe_xmit_frame_ring(struct sk_buff *skb,
 				  struct ixgbe_ring *tx_ring);
 u32 ixgbe_rss_indir_tbl_entries(struct ixgbe_adapter *adapter);
 void ixgbe_store_reta(struct ixgbe_adapter *adapter);
+/* hook for bpf prog */
+int ixgbe_call_bpf(struct bpf_prog *prog, void *data, unsigned int length);
 #endif /* _IXGBE_H_ */

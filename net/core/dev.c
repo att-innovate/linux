@@ -94,6 +94,7 @@
 #include <linux/ethtool.h>
 #include <linux/notifier.h>
 #include <linux/skbuff.h>
+#include <linux/bpf.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/busy_poll.h>
@@ -6479,6 +6480,44 @@ int dev_change_proto_down(struct net_device *dev, bool proto_down)
 	return ops->ndo_change_proto_down(dev, proto_down);
 }
 EXPORT_SYMBOL(dev_change_proto_down);
+
+/**
+*	dev_change_bpf_fd - set or clear a bpf program for a device
+*	@dev: device
+*	@fd: new program fd or negative value to clear
+*
+*	Set or clear a bpf program for a device
+*/
+int dev_change_bpf_fd(struct net_device *dev, int fd)
+{
+	const struct net_device_ops *ops = dev->netdev_ops;
+	struct bpf_prog *prog = NULL;
+	int err;
+
+	if (!ops->ndo_bpf_set)
+		return -EOPNOTSUPP;
+	if (!netif_device_present(dev))
+		return -ENODEV;
+
+	if (fd >= 0) {
+		prog = bpf_prog_get(fd);
+		if (IS_ERR(prog))
+			return PTR_ERR(prog);
+
+		if (prog->type != BPF_PROG_TYPE_PHYS_DEV) {
+			bpf_prog_put(prog);
+			return -EINVAL;
+		}
+	}
+
+	err = ops->ndo_bpf_set(dev, prog);
+	if (err < 0 && prog)
+		bpf_prog_put(prog);
+
+	return err;
+}
+EXPORT_SYMBOL(dev_change_bpf_fd);
+
 
 /**
  *	dev_new_index	-	allocate an ifindex

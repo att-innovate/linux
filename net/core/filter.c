@@ -2026,6 +2026,12 @@ tc_cls_act_func_proto(enum bpf_func_id func_id)
 	}
 }
 
+static const struct bpf_func_proto *
+phys_dev_func_proto(enum bpf_func_id func_id)
+{
+	return sk_filter_func_proto(func_id);
+}
+
 static bool __is_valid_access(int off, int size, enum bpf_access_type type)
 {
 	/* check bounds */
@@ -2079,6 +2085,36 @@ static bool tc_cls_act_is_valid_access(int off, int size,
 		}
 	}
 	return __is_valid_access(off, size, type);
+}
+
+static bool __is_valid_phys_dev_access(int off, int size,
+                      enum bpf_access_type type)
+{
+	if (off < 0 || off >= sizeof(struct bpf_phys_dev_md))
+	    return false;
+	
+	if (off % size != 0)
+	    return false;
+	
+	if (size != 4)
+	    return false;
+	
+	return true;
+}
+
+static bool phys_dev_is_valid_access(int off, int size,
+                    enum bpf_access_type type)
+{
+	if (type == BPF_WRITE)
+	    return false;
+	
+	switch (off) {
+	case offsetof(struct bpf_phys_dev_md, len):
+	    break;
+	default:
+	    return false;
+	}
+	return __is_valid_phys_dev_access(off, size, type);
 }
 
 static u32 bpf_net_convert_ctx_access(enum bpf_access_type type, int dst_reg,
@@ -2218,6 +2254,27 @@ static u32 bpf_net_convert_ctx_access(enum bpf_access_type type, int dst_reg,
 	return insn - insn_buf;
 }
 
+static u32 bpf_phys_dev_convert_ctx_access(enum bpf_access_type type,
+                        int dst_reg, int src_reg,
+                        int ctx_off,
+                        struct bpf_insn *insn_buf,
+                        struct bpf_prog *prog)
+{
+	struct bpf_insn *insn = insn_buf;
+	
+	switch (ctx_off) {
+	case offsetof(struct bpf_phys_dev_md, len):
+	    BUILD_BUG_ON(FIELD_SIZEOF(struct sk_buff, len) != 4);
+	
+	    *insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
+	                  offsetof(struct sk_buff, len));
+	    break;
+	}
+	
+	return insn - insn_buf;
+}
+
+
 static const struct bpf_verifier_ops sk_filter_ops = {
 	.get_func_proto = sk_filter_func_proto,
 	.is_valid_access = sk_filter_is_valid_access,
@@ -2228,6 +2285,12 @@ static const struct bpf_verifier_ops tc_cls_act_ops = {
 	.get_func_proto = tc_cls_act_func_proto,
 	.is_valid_access = tc_cls_act_is_valid_access,
 	.convert_ctx_access = bpf_net_convert_ctx_access,
+};
+
+static const struct bpf_verifier_ops phys_dev_ops = {
+	.get_func_proto = phys_dev_func_proto,
+	.is_valid_access = phys_dev_is_valid_access,
+	.convert_ctx_access = bpf_phys_dev_convert_ctx_access,
 };
 
 static struct bpf_prog_type_list sk_filter_type __read_mostly = {
@@ -2245,12 +2308,17 @@ static struct bpf_prog_type_list sched_act_type __read_mostly = {
 	.type = BPF_PROG_TYPE_SCHED_ACT,
 };
 
+static struct bpf_prog_type_list phys_dev_type __read_mostly = {
+	.ops = &phys_dev_ops,
+	.type = BPF_PROG_TYPE_PHYS_DEV,
+};
+
 static int __init register_sk_filter_ops(void)
 {
 	bpf_register_prog_type(&sk_filter_type);
 	bpf_register_prog_type(&sched_cls_type);
 	bpf_register_prog_type(&sched_act_type);
-
+    	bpf_register_prog_type(&phys_dev_type);
 	return 0;
 }
 late_initcall(register_sk_filter_ops);

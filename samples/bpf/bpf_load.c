@@ -49,6 +49,7 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	bool is_socket = strncmp(event, "socket", 6) == 0;
 	bool is_kprobe = strncmp(event, "kprobe/", 7) == 0;
 	bool is_kretprobe = strncmp(event, "kretprobe/", 10) == 0;
+	bool is_phys_dev = strncmp(event, "phys_dev", 8) == 0;
 	enum bpf_prog_type prog_type;
 	char buf[256];
 	int fd, efd, err, id;
@@ -63,6 +64,9 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
 	} else if (is_kprobe || is_kretprobe) {
 		prog_type = BPF_PROG_TYPE_KPROBE;
+    	} else if (is_phys_dev) {
+        	printf("BPF program type is PHYS_DEV\n");
+                prog_type = BPF_PROG_TYPE_PHYS_DEV;
 	} else {
 		printf("Unknown event '%s'\n", event);
 		return -1;
@@ -75,7 +79,9 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	}
 
 	prog_fd[prog_cnt++] = fd;
-
+    	if (is_phys_dev)
+        	return 0;
+ 
 	if (is_socket) {
 		event += 6;
 		if (*event != '/')
@@ -154,6 +160,11 @@ static int load_maps(struct bpf_map_def *maps, int len)
 
 	for (i = 0; i < len / sizeof(struct bpf_map_def); i++) {
 
+                printf("maps[i].type: %d\n", (int)maps[i].type);
+                printf("maps[i].key_size: %d\n", maps[i].key_size);
+                printf("maps[i].value_size: %d\n", maps[i].value_size);
+                printf("maps[i].max_entries: %d\n", maps[i].max_entries);
+                printf("maps[i].map_flags: %d\n", maps[i].map_flags);
 		map_fd[i] = bpf_create_map(maps[i].type,
 					   maps[i].key_size,
 					   maps[i].value_size,
@@ -274,7 +285,9 @@ int load_bpf_file(char *path)
 			}
 			memcpy(&kern_version, data->d_buf, sizeof(int));
 		} else if (strcmp(shname, "maps") == 0) {
+            printf("entering maps in load_bpf_file\n");
 			processed_sec[i] = true;
+            printf("data->d_buf: %zu\n", data->d_size);
 			if (load_maps(data->d_buf, data->d_size))
 				return 1;
 		} else if (shdr.sh_type == SHT_SYMTAB) {
@@ -304,6 +317,7 @@ int load_bpf_file(char *path)
 
 			if (memcmp(shname_prog, "kprobe/", 7) == 0 ||
 			    memcmp(shname_prog, "kretprobe/", 10) == 0 ||
+			    memcmp(shname_prog, "phys_dev", 8) == 0 ||
 			    memcmp(shname_prog, "socket", 6) == 0)
 				load_and_attach(shname_prog, insns, data_prog->d_size);
 		}
@@ -320,6 +334,7 @@ int load_bpf_file(char *path)
 
 		if (memcmp(shname, "kprobe/", 7) == 0 ||
 		    memcmp(shname, "kretprobe/", 10) == 0 ||
+		    memcmp(shname, "phys_dev", 8) == 0 ||
 		    memcmp(shname, "socket", 6) == 0)
 			load_and_attach(shname, data->d_buf, data->d_size);
 	}

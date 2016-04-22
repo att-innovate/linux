@@ -18,7 +18,8 @@ hostprogs-y += trace_output
 hostprogs-y += lathist
 hostprogs-y += offwaketime
 hostprogs-y += spintest
-hostprogs-y += map_perf_test
+#hostprogs-y += map_perf_test
+hostprogs-y += netdrvx1
 
 test_verifier-objs := test_verifier.o libbpf.o
 test_maps-objs := test_maps.o libbpf.o
@@ -37,7 +38,8 @@ trace_output-objs := bpf_load.o libbpf.o trace_output_user.o
 lathist-objs := bpf_load.o libbpf.o lathist_user.o
 offwaketime-objs := bpf_load.o libbpf.o offwaketime_user.o
 spintest-objs := bpf_load.o libbpf.o spintest_user.o
-map_perf_test-objs := bpf_load.o libbpf.o map_perf_test_user.o
+#map_perf_test-objs := bpf_load.o libbpf.o map_perf_test_user.o
+netdrvx1-objs := bpf_load.o libbpf.o netdrvx1_user.o
 
 # Tell kbuild to always build the programs
 always := $(hostprogs-y)
@@ -55,7 +57,8 @@ always += tcbpf1_kern.o
 always += lathist_kern.o
 always += offwaketime_kern.o
 always += spintest_kern.o
-always += map_perf_test_kern.o
+#always += map_perf_test_kern.o
+always += netdrvx1_kern.o
 
 HOSTCFLAGS += -I$(objtree)/usr/include
 
@@ -74,10 +77,12 @@ HOSTLOADLIBES_trace_output += -lelf -lrt
 HOSTLOADLIBES_lathist += -lelf
 HOSTLOADLIBES_offwaketime += -lelf
 HOSTLOADLIBES_spintest += -lelf
-HOSTLOADLIBES_map_perf_test += -lelf -lrt
+#HOSTLOADLIBES_map_perf_test += -lelf -lrt
+HOSTLOADLIBES_netdrvx1 += -lelf
 
 # point this to your LLVM backend with bpf support
-LLC=$(srctree)/tools/bpf/llvm/bld/Debug+Asserts/bin/llc
+#LLC=$(srctree)/tools/bpf/llvm/build/bin/llc
+#LLC=/home/ops/linux/tools/llvm/build/bin/llc
 
 # asm/sysreg.h inline assmbly used by it is incompatible with llvm.
 # But, ehere is not easy way to fix it, so just exclude it since it is
@@ -85,7 +90,4 @@ LLC=$(srctree)/tools/bpf/llvm/bld/Debug+Asserts/bin/llc
 $(obj)/%.o: $(src)/%.c
 	clang $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS) \
 		-D__KERNEL__ -D__ASM_SYSREG_H -Wno-unused-value -Wno-pointer-sign \
-		-O2 -emit-llvm -c $< -o -| $(LLC) -march=bpf -filetype=obj -o $@
-	clang $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS) \
-		-D__KERNEL__ -D__ASM_SYSREG_H -Wno-unused-value -Wno-pointer-sign \
-		-O2 -emit-llvm -c $< -o -| $(LLC) -march=bpf -filetype=asm -o $@.s
+		-O2 -emit-llvm -c $< -o -| llc -march=bpf -filetype=obj -o $@
